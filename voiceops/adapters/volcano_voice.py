@@ -33,6 +33,10 @@ from typing import Callable
 from voiceops.adapters import volcano_protocol as vp
 from voiceops.ports import VoiceEvent
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 AudioPlayer = Callable[[bytes, str], None]
 
 STT_URL = "wss://openspeech.bytedance.com/api/v3/plan/sauc/bigmodel_async"
@@ -120,6 +124,7 @@ class VolcanoVoiceAdapter:
         self._session_ended = threading.Event()
         self._tts_task: asyncio.Task | None = None
         self._stt_task: asyncio.Task | None = None
+        self._ended = False
 
     # ---- VoiceGateway：同步门面 -------------------------------------------
 
@@ -131,12 +136,13 @@ class VolcanoVoiceAdapter:
         self._handler = handler
         self._interrupted.clear()
         self._session_ended.clear()
+        self._ended = False
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever,
                                         name="volcano-voice", daemon=True)
         self._thread.start()
-        self._stt_task = asyncio.run_coroutine_threadsafe(
-            self._stt_session(), self._loop)
+        logger.info("语音会话启动（STT=%s）", self.cfg.stt_url)
+        asyncio.run_coroutine_threadsafe(self._stt_session(), self._loop)
 
     def send_audio(self, frame: bytes) -> None:
         if self._loop is None:
@@ -158,12 +164,15 @@ class VolcanoVoiceAdapter:
         self._emit(VoiceEvent(type="interrupt"))
 
     def end_session(self) -> None:
+        if self._loop is None or self._ended:      # 幂等：二次调用直接返回
+            return
+        self._ended = True
+        logger.info("语音会话结束（发送末包并等待服务端最终转写）")
         self._session_ended.set()
-        if self._loop is not None:
-            asyncio.run_coroutine_threadsafe(
-                self._audio_queue.put(None), self._loop)
-            asyncio.run_coroutine_threadsafe(self._shutdown(), self._loop).result(timeout=10)
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        asyncio.run_coroutine_threadsafe(
+            self._audio_queue.put(None), self._loop)
+        asyncio.run_coroutine_threadsafe(self._shutdown(), self._loop).result(timeout=10)
+        self._loop.call_soon_threadsafe(self._loop.stop)
 
     # ---- 内部 ---------------------------------------------------------------
 
@@ -172,6 +181,14 @@ class VolcanoVoiceAdapter:
             self._handler(event)
 
     async def _shutdown(self) -> None:
+        stt = self._stt_task
+        if stt and not stt.done():
+            try:
+                # 优雅收尾：末包之后服务端会回传最后一句话的最终转写，
+                # 给它最多 2 秒自然结束（收到 is_last 或服务端关闭即完成）
+                await asyncio.wait_for(asyncio.shield(stt), timeout=2.0)
+            except Exception:      # noqa: BLE001 —— 超时/异常都转入强杀
+                pass
         for task in (self._stt_task, self._tts_task):
             if task and not task.done():
                 task.cancel()
@@ -180,6 +197,7 @@ class VolcanoVoiceAdapter:
     # ---- STT：二进制帧流式识别 ----------------------------------------------
 
     async def _stt_session(self) -> None:
+        self._stt_task = asyncio.current_task()   # 存真正的 asyncio.Task（供等待/取消）
         import websockets
 
         headers = vp.tts_stt_common_headers(
@@ -189,6 +207,7 @@ class VolcanoVoiceAdapter:
             async with websockets.connect(
                     self.cfg.stt_url, additional_headers=headers,
                     open_timeout=self.connect_timeout, max_size=16 * 1024 * 1024) as ws:
+                logger.info("STT 已连接（resource_id=%s）", self.cfg.stt_resource_id)
                 await ws.send(vp.build_full_request({
                     "user": {"uid": self.cfg.uid},
                     "audio": {"format": "pcm", "codec": "raw",
@@ -198,15 +217,18 @@ class VolcanoVoiceAdapter:
                                 "show_utterances": True,
                                 "enable_nonstream": False},
                 }))
-                seq = 0
                 sender = asyncio.create_task(self._stt_send_loop(ws))
                 try:
                     async for msg in ws:
                         if isinstance(msg, str):
                             continue                      # 控制文本帧：忽略
                         frame = vp.parse_server_frame(msg)
+                        logger.debug("STT 收到响应: type=%s code=%s",
+                                     frame.msg_type, frame.code)
                         if frame.msg_type == vp.SERVER_ERROR_RESPONSE:
                             err = (frame.payload_json or {}).get("message", "")
+                            logger.warning("STT 服务端错误 code=%s msg=%s",
+                                           frame.code, err)
                             self._emit(VoiceEvent(type="error", data={
                                 "source": "stt", "code": frame.code, "message": err}))
                             break
@@ -230,18 +252,24 @@ class VolcanoVoiceAdapter:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 —— 网络异常转事件，不逃逸线程
+            logger.warning("STT 连接异常: %s: %s", type(exc).__name__, exc)
             self._emit(VoiceEvent(type="error", data={"source": "stt",
                                                       "message": str(exc)}))
 
     async def _stt_send_loop(self, ws) -> None:
-        seq = 0
+        seq = 1      # 配置帧 build_full_request 已占用 seq=1，音频从 2 递增，
+                     # 否则服务端报 autoAssignedSequence mismatch 并断开
+        total = 0
         while True:
             data = await self._audio_queue.get()
             if data is None or self._session_ended.is_set():
                 seq += 1
                 await ws.send(vp.build_audio_request(b"\x00" * 320, seq, last=True))
+                logger.info("STT 音频发送完毕：共 %d 帧", total)
                 return
             seq += 1
+            total += 1
+            logger.debug("STT 发送音频帧 seq=%d size=%d", seq, len(data))
             await ws.send(vp.build_audio_request(data, seq))
 
     # ---- TTS：JSON 事件流 + 二进制音频下行 ----------------------------------

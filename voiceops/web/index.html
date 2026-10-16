@@ -132,6 +132,9 @@ renderBoard(5, 5);
 // ---- WebSocket ----
 let ws = null, voiceEnabled = false;
 function connect(onOpen){
+  if (ws && ws.readyState <= 1){        // 复用前先断开旧会话，避免僵尸 STT 连接等包超时
+    ws.onclose = null; ws.close();
+  }
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.binaryType = "arraybuffer";
@@ -141,7 +144,7 @@ function connect(onOpen){
     if (ev.data instanceof ArrayBuffer){ playTTS(ev.data); return; }
     const m = JSON.parse(ev.data);
     if (m.type === "voice_ready"){ voiceEnabled = true;
-      setBadge("voiceBadge", true, "火山引擎 STT/TTS 已就绪"); showMic(); }
+      setBadge("voiceBadge", true, "火山引擎 STT/TTS 已就绪"); }
     else if (m.type === "board"){ renderBoard(m.x, m.y); }
     else if (m.type === "transcript"){
       log(m.final ? "you" : "sys", (m.final ? "你：" : "识别中…") + m.text); }
@@ -160,6 +163,7 @@ function playTTS(bytes){
 
 // ---- 麦克风：getUserMedia → PCM 16k/16bit/mono → WS ----
 let audioCtx = null, stream = null, processor = null, streaming = false;
+let micFrames = 0, micBytes = 0, micPeakDb = -100, micTimer = null;
 function floatTo16(input){
   const out = new Int16Array(input.length);
   for (let i = 0; i < input.length; i++){
@@ -182,36 +186,54 @@ async function startMic(){
     stream = await navigator.mediaDevices.getUserMedia(
       {audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true}});
     audioCtx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 16000});
+    if (audioCtx.state === "suspended") await audioCtx.resume();  // 浏览器自动播放策略防御
     const src = audioCtx.createMediaStreamSource(stream);
-    const proc = audioCtx.createScriptProcessor(4096, 1, 1);
+    const proc = audioCtx.createScriptProcessor(2048, 1, 1);      // 2048 帧 ≈ 128ms @16k，符合火山 100~200ms 包节奏
     processor = proc; streaming = true;
+    micFrames = 0; micBytes = 0; micPeakDb = -100;
     proc.onaudioprocess = (e) => {
       if (!streaming) return;
       let f = e.inputBuffer.getChannelData(0);
+      let sum = 0;                       // 麦克风电平监测：判断是否采集到真实声音
+      for (let i = 0; i < f.length; i++) sum += f[i] * f[i];
+      const db = 20 * Math.log10(Math.sqrt(sum / f.length) || 1e-6);
+      if (db > micPeakDb) micPeakDb = db;
       if (audioCtx.sampleRate !== 16000) f = downsample(f, audioCtx.sampleRate, 16000);
-      if (ws && ws.readyState === 1) ws.send(floatTo16(f));
+      const buf = floatTo16(f);
+      micFrames++; micBytes += buf.byteLength;
+      if (ws && ws.readyState === 1) ws.send(buf);
     };
     const sink = audioCtx.createGain(); sink.gain.value = 0;
     src.connect(proc); proc.connect(sink); sink.connect(audioCtx.destination);
+    micTimer = setInterval(() => log("sys",
+      `[debug] 音频上下文=${audioCtx.state} 采样率=${audioCtx.sampleRate}Hz ` +
+      `已发送 ${micFrames} 帧 / ${micBytes} 字节 ` +
+      `峰值电平=${micPeakDb.toFixed(0)}dB ` +
+      (micPeakDb > -45 ? "(检测到声音)" : "(近乎静音！请检查系统麦克风设备/音量/隐私权限)")), 5000);
     setMicUI(true);
-    log("sys", "麦克风已开启，请说出指令…");
+    log("sys", `麦克风已开启（AudioContext=${audioCtx.state}, ` +
+      `${audioCtx.sampleRate}Hz），请说出指令…`);
   }catch(err){
     $("err").textContent = "麦克风授权失败：" + err.message + "（可用下方文字输入体验）";
   }
 }
 function stopMic(){
   streaming = false;
+  if (micTimer) { clearInterval(micTimer); micTimer = null; }
+  log("sys", `[debug] 本次录音共发送 ${micFrames} 帧 / ${micBytes} 字节，峰值电平 ${micPeakDb.toFixed(0)}dB`);
   if (processor) processor.disconnect();
   if (stream) stream.getTracks().forEach(t => t.stop());
   if (audioCtx) audioCtx.close();
   audioCtx = stream = processor = null;
   setMicUI(false);
   log("sys", "麦克风已停止。");
+  // 通知后端结束 STT 会话（发送负序号末包），避免服务端等包超时 45000081
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({type: "stop"}));
 }
 function setMicUI(on){
   const b = $("btnMic");
   b.style.display = on ? "inline-block" : "none";
-  b.textContent = on ? "● 停止录音" : "● 停止录音";
+  b.disabled = !on;
   b.classList.toggle("rec", on);
   $("btnConnect").disabled = on;
 }

@@ -118,8 +118,10 @@ def run_web(port: int) -> None:
     """网页 Demo：浏览器麦克风语音操控方块（uvicorn 承载 FastAPI）。"""
     import uvicorn
 
+    from voiceops.logging_setup import setup_logging
     from voiceops.webapp import build_web_container, create_app
 
+    setup_logging()
     container, volc_config = build_web_container()
     app = create_app(container, volc_config)
     print("=" * 56)

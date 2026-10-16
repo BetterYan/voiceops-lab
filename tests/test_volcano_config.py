@@ -44,8 +44,8 @@ def test_missing_dotenv_is_silent(tmp_path, monkeypatch):
     """没有任何 .env / 环境变量：from_env 返回空 key 配置（由 start_session 报错）。"""
     _clean_volc_env(monkeypatch)
     monkeypatch.chdir(tmp_path)
-
-    cfg = VolcanoConfig.from_env()
+    # 指向不存在的显式路径，避免 from_env 的项目根回退找到真实 .env（测试隔离）
+    cfg = VolcanoConfig.from_env(tmp_path / "nonexistent.env")
 
     assert cfg.api_key == ""
     assert cfg.stt_url.startswith("wss://openspeech.bytedance.com")

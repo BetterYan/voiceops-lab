@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,9 @@ from fastapi.staticfiles import StaticFiles
 
 from voiceops.adapters.volcano_voice import VolcanoConfig, VolcanoVoiceAdapter
 from voiceops.app import Container, build_container
+from voiceops.logging_setup import setup_logging
+
+logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
@@ -67,6 +71,17 @@ def create_app(container: Container,
     return app
 
 
+def create_web_app() -> FastAPI:
+    """uvicorn 工厂入口：
+    uv run uvicorn voiceops.webapp:create_web_app --factory --port 8080
+    """
+    setup_logging()
+    container, volc_config = build_web_container()
+    logger.info("Web 容器装配完成：voice_enabled=%s",
+                bool(volc_config and volc_config.api_key))
+    return create_app(container, volc_config)
+
+
 class BoardSession:
     """一个浏览器连接 = 一个会话：语音事件泵 + 指令处理 + TTS 回传。"""
 
@@ -77,6 +92,7 @@ class BoardSession:
         self.loop = asyncio.get_running_loop()
         self.voice: VolcanoVoiceAdapter | None = None
         self._events: asyncio.Queue = asyncio.Queue()
+        self._frames = 0
         if volc_config is not None:
             self.voice = VolcanoVoiceAdapter(volc_config)
 
@@ -91,6 +107,7 @@ class BoardSession:
         if self.voice is not None:
             self.voice.start_session(self._on_voice_event)
             await self.send({"type": "voice_ready"})
+        logger.info("WS 会话建立（voice=%s）", self.voice is not None)
         pump = asyncio.create_task(self._pump_voice_events())
         try:
             while True:
@@ -99,15 +116,33 @@ class BoardSession:
                     return
                 if msg.get("bytes") is not None:
                     if self.voice is not None:
+                        self._frames += 1
+                        if self._frames % 100 == 0:      # INFO 级别的吞吐心跳，无需 DEBUG
+                            logger.info("WS 已收到音频 %d 帧（约 %d 秒）",
+                                        self._frames, self._frames * 128 // 1000)
+                        logger.debug("WS 收到音频帧 %d 字节", len(msg["bytes"]))
                         self.voice.send_audio(msg["bytes"])   # 16k/16bit/mono PCM
+                    else:
+                        logger.warning("收到音频帧但语音通道未启用")
                 elif msg.get("text"):
                     data = json.loads(msg["text"])
                     if data.get("type") == "text":
                         # 文字输入直通编排（与语音同一命令路径）
                         await self.handle_command(data.get("text", ""))
                     elif data.get("type") == "stop":
+                        logger.info("WS 收到 stop，结束会话")
                         break
         finally:
+            logger.info("WS 会话关闭")
+            if self.voice is not None:
+                # 优雅收尾：end_session 发送末包并等待服务端回传最后一句话的
+                # 最终转写（pump 仍在消费事件）；随后清空残留事件，避免丢指令
+                try:
+                    await asyncio.to_thread(self.voice.end_session)
+                except Exception:      # noqa: BLE001 —— 收尾失败不阻塞断开
+                    pass
+                while not self._events.empty():
+                    await self._handle_voice_event(self._events.get_nowait())
             pump.cancel()
 
     async def close(self) -> None:
@@ -121,17 +156,20 @@ class BoardSession:
 
     async def _pump_voice_events(self) -> None:
         while True:
-            event = await self._events.get()
-            if event.type == "partial_transcript":
-                await self.send({"type": "transcript",
-                                 "text": event.data.get("text", ""),
-                                 "final": False})
-            elif event.type == "final_transcript":
-                text = event.data.get("text", "")
-                await self.send({"type": "transcript", "text": text, "final": True})
-                await self.handle_command(text)
-            elif event.type == "error":
-                await self.send({"type": "error", "data": event.data})
+            await self._handle_voice_event(await self._events.get())
+
+    async def _handle_voice_event(self, event) -> None:
+        logger.debug("语音事件: %s %s", event.type, event.data)
+        if event.type == "partial_transcript":
+            await self.send({"type": "transcript",
+                             "text": event.data.get("text", ""),
+                             "final": False})
+        elif event.type == "final_transcript":
+            text = event.data.get("text", "")
+            await self.send({"type": "transcript", "text": text, "final": True})
+            await self.handle_command(text)
+        elif event.type == "error":
+            await self.send({"type": "error", "data": event.data})
 
     # ---- 指令 → 编排 → 状态/TTS 回传 ------------------------------------------
 
@@ -139,8 +177,10 @@ class BoardSession:
         text = text.strip()
         if not text:
             return
+        logger.info("处理指令: %s", text)
         result = await asyncio.to_thread(
             self.c.orchestrator.run, text, "web", "web-session")
+        logger.info("编排完成，回复: %s", result["final"])
         block = self.c.hardware.read_state("block")
         await self.send({"type": "board",
                          "x": block.properties["x"], "y": block.properties["y"]})
