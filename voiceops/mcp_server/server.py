@@ -1,4 +1,4 @@
-"""MCP Server：把工具集以 Model Context Protocol 标准暴露（JD：统一软硬件上下文协议）。
+"""MCP Server：把工具集以 Model Context Protocol 标准暴露（统一软硬件上下文协议层）。
 
 设计理念：
 - 工具契约（ToolSpec）在 core.tools 一处定义；本模块只做"协议桥"——

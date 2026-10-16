@@ -1,6 +1,6 @@
 """事件总线 / 时钟 / 交互适配器（进程内实现）。
 
-- InProcessEventBus：同步 pub/sub。同步是 PoC 的刻意选择 —— 确定性、易断言；
+- InProcessEventBus：同步 pub/sub。同步是刻意的工程选择 —— 确定性、易断言；
   生产可替换为 asyncio/Redis 实现，核心域无感。
 - FakeClock：手动拨钟，让记忆衰减、超时策略可被精确断言。
 - AutoConfirm / ConsoleInteraction：HITL 的两个"人"实现。

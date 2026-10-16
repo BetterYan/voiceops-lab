@@ -23,7 +23,7 @@ class ToolCall:
 
 @dataclass
 class LLMResponse:
-    content: str | None = None          # 自由文本；PoC 约定 "FINAL: ..." / "FAIL: ..."
+    content: str | None = None          # 自由文本；文本协议约定 "FINAL: ..." / "FAIL: ..."
     tool_calls: list[ToolCall] = field(default_factory=list)
     structured: dict[str, Any] | None = None  # structured 输出（plan / reflect）
 

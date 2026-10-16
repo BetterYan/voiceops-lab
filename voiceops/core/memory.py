@@ -1,6 +1,6 @@
 """MemoryService：情节/程序记忆的动态融合 + 智能衰减（v1）。
 
-设计理念（JD：攻克记忆漂移与上下文污染）：
+设计理念（攻克记忆漂移与上下文污染）：
 - 融合：情节（发生过什么）与程序（怎么做）同库存储、统一检索，
   按 kind 过滤实现场景化注入。
 - 智能衰减：score = 0.5×相似度 + 0.3×新近度 + 0.2×频率
@@ -37,7 +37,7 @@ def _tokens(text: str) -> dict[str, int]:
             buf.clear()
 
     for ch in text.lower():
-        if "\u4e00" <= ch <= "\u9fff":      # CJK：单字成词（PoC 级检索足够）
+        if "\u4e00" <= ch <= "\u9fff":      # CJK：单字成词（轻量检索足够）
             flush()
             out[ch] = out.get(ch, 0) + 1
         elif ch.isalnum():

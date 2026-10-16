@@ -1,4 +1,4 @@
-"""voiceops-lab — 语音操控的智能硬件工作台（面试 PoC）。
+"""voiceops-lab — 语音操控的智能硬件工作台。
 
 架构：六边形（Ports & Adapters）
 - voiceops.ports    ：全部接口（Protocol），核心域唯一依赖

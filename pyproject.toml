@@ -1,7 +1,7 @@
 [project]
 name = "voiceops-lab"
 version = "0.1.0"
-description = "语音操控的智能硬件工作台 — AI Agent × 硬件交互架构 PoC（面试作品）"
+description = "语音操控的智能硬件工作台 — AI Agent × 硬件交互参考实现"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

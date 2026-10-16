@@ -1,6 +1,6 @@
 """ToolRegistry：工具集的单一事实源。
 
-设计理念（JD：Agent Skills 与任务编排 / 高质量工具集）：
+设计理念（高质量工具集与任务编排）：
 - 工具 = ToolSpec（契约 + 实现 + 安全级别 + 回滚构建器），
   同一份注册表服务三个消费方：Executor 的 ReAct 循环、MCP Server 暴露、契约测试 ——
   一处定义，处处一致。

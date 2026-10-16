@@ -1,4 +1,4 @@
-"""语音适配器：ConsoleVoicePort（PoC 文本模式）+ VolcanoVoiceAdapter（火山引擎，已实现）。
+"""语音适配器：ConsoleVoicePort（文本模式）+ VolcanoVoiceAdapter（火山引擎，已实现）。
 
 要点：两者实现同一 VoiceGateway 契约 ——
 "语音只是可替换的外围适配器"不是口号，是 import 就能验证的事实。

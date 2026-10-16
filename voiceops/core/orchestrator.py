@@ -7,7 +7,7 @@
                              └─ 任务失败           → reflect ──┬─ retry/revise → execute
                                                               └─ abort → respond → END
 
-工程要点（对应 JD：状态丢失 / 非确定性行为 / 死锁）：
+工程要点（状态丢失 / 非确定性行为 / 死锁的对策）：
 - 状态集中在 AgentState（TypedDict），配合 LangGraph checkpointer 持久化
   —— 长链路任务崩溃后可从检查点恢复（M2 有状态编排）。
 - 循环防护是**结构性**的：

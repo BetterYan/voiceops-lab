@@ -1,4 +1,4 @@
-"""Agent Skills：Markdown 技能包加载器（JD：Agent Skills 开发与优化）。
+"""Agent Skills：Markdown 技能包加载器（声明式技能包的加载与匹配）。
 
 技能包格式（skills_md/*.md）：
     ---

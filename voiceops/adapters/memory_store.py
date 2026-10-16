@@ -1,7 +1,7 @@
 """SqliteVectorMemory：MemoryStore 的默认实现。
 
 设计理念：
-- PoC 用 SQLite + 纯 Python 词袋余弦 —— 零重量级依赖、结果确定可复现；
+- 当前实现用 SQLite + 纯 Python 词袋余弦 —— 零重量级依赖、结果确定可复现；
   接口与向量数据库（ChromaDB/pgvector）同构，切换存储不影响核心域策略。
 - 这本身是可扩展性论证的一部分：存储升级 = 换适配器。
 """
