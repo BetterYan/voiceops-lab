@@ -116,6 +116,9 @@ def run_chat() -> None:
 
 def run_web(port: int) -> None:
     """网页 Demo：浏览器麦克风语音操控方块（uvicorn 承载 FastAPI）。"""
+    import asyncio
+    import signal
+
     import uvicorn
 
     from voiceops.logging_setup import setup_logging
@@ -129,7 +132,30 @@ def run_web(port: int) -> None:
     print("  指令示例：向左移动两格 / 移到右上角 / 回到中心")
     print("  语音：需 .env 配置 VOLC_API_KEY；无凭据时用文字输入体验")
     print("=" * 56)
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+
+    config = uvicorn.Config(app, host="127.0.0.1", port=port,
+                            log_level="warning")
+    server = uvicorn.Server(config)
+
+    # 自定义 SIGINT：置位 should_exit 让 uvicorn 走完整的优雅关闭流程
+    # （默认 asyncio Runner 会在 Ctrl+C 时抛 KeyboardInterrupt 撕裂运行中的
+    #   会话，产生成片的 CancelledError 回溯）
+    def _request_shutdown(signum, frame) -> None:
+        server.should_exit = True
+
+    signal.signal(signal.SIGINT, _request_shutdown)
+    try:
+        signal.signal(signal.SIGBREAK, _request_shutdown)   # Windows Ctrl+Break
+    except (AttributeError, ValueError):                    # noqa: BLE001
+        pass
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(server.serve())
+    finally:
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
 
 
 def main() -> None:

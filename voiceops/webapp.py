@@ -132,6 +132,9 @@ class BoardSession:
                     elif data.get("type") == "stop":
                         logger.info("WS 收到 stop，结束会话")
                         break
+        except asyncio.CancelledError:
+            # 服务关闭/连接被取消：正常收尾后干净返回，避免 ASGI 报错回溯
+            logger.info("WS 会话被取消（服务关闭或客户端断开）")
         finally:
             logger.info("WS 会话关闭")
             if self.voice is not None:
@@ -144,6 +147,7 @@ class BoardSession:
                 while not self._events.empty():
                     await self._handle_voice_event(self._events.get_nowait())
             pump.cancel()
+            await asyncio.gather(pump, return_exceptions=True)
 
     async def close(self) -> None:
         if self.voice is not None:
@@ -159,6 +163,16 @@ class BoardSession:
             await self._handle_voice_event(await self._events.get())
 
     async def _handle_voice_event(self, event) -> None:
+        # 单个事件处理失败（如 TTS 网络错误）不允许杀死事件泵，
+        # 否则后续所有语音转写/指令都会失去响应
+        try:
+            await self._dispatch_voice_event(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception:      # noqa: BLE001
+            logger.exception("语音事件处理失败（type=%s）", event.type)
+
+    async def _dispatch_voice_event(self, event) -> None:
         logger.debug("语音事件: %s %s", event.type, event.data)
         if event.type == "partial_transcript":
             await self.send({"type": "transcript",
@@ -185,11 +199,17 @@ class BoardSession:
         await self.send({"type": "board",
                          "x": block.properties["x"], "y": block.properties["y"]})
         await self.send({"type": "agent_reply", "text": result["final"]})
-        # TTS：音频字节直接回传浏览器播放（无凭据则跳过）
+        # TTS：音频字节直接回传浏览器播放（无凭据则跳过；
+        # 播报失败只降级——board/agent_reply 已送达，指令执行不受影响）
         if self.voice is not None and result["final"]:
-            audio = await asyncio.to_thread(self._tts_bytes, result["final"])
-            if audio:
-                await self.ws.send_bytes(audio)
+            try:
+                audio = await asyncio.to_thread(self._tts_bytes, result["final"])
+                if audio:
+                    await self.ws.send_bytes(audio)
+            except asyncio.CancelledError:
+                raise
+            except Exception:      # noqa: BLE001
+                logger.warning("TTS 音频生成/回传失败（已跳过）", exc_info=True)
 
     def _tts_bytes(self, text: str) -> bytes | None:
         buf = bytearray()

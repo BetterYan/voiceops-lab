@@ -125,6 +125,7 @@ class VolcanoVoiceAdapter:
         self._tts_task: asyncio.Task | None = None
         self._stt_task: asyncio.Task | None = None
         self._ended = False
+        self._definite_count = 0
 
     # ---- VoiceGateway：同步门面 -------------------------------------------
 
@@ -137,6 +138,7 @@ class VolcanoVoiceAdapter:
         self._interrupted.clear()
         self._session_ended.clear()
         self._ended = False
+        self._definite_count = 0
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever,
                                         name="volcano-voice", daemon=True)
@@ -215,7 +217,9 @@ class VolcanoVoiceAdapter:
                     "request": {"model_name": "bigmodel", "enable_itn": True,
                                 "enable_punc": True, "enable_ddc": False,
                                 "show_utterances": True,
-                                "enable_nonstream": False},
+                                # 两遍识别：句尾静音即回传 definite=true 的最终结果，
+                                # 无需等末包/停止录音，指令可在说话间隙即时执行
+                                "enable_nonstream": True},
                 }))
                 sender = asyncio.create_task(self._stt_send_loop(ws))
                 try:
@@ -237,10 +241,15 @@ class VolcanoVoiceAdapter:
                         result = (frame.payload_json or {}).get("result", {})
                         text = result.get("text", "")
                         utterances = result.get("utterances") or []
-                        definite = any(u.get("definite") for u in utterances)
-                        if definite:
+                        # 每条响应携带全部历史语句；只对"新完成"的语句发最终事件，
+                        # 否则第一句 definite 后的每条响应都会重复触发指令
+                        definite_texts = [u.get("text", "") for u in utterances
+                                          if u.get("definite")]
+                        if len(definite_texts) > self._definite_count:
+                            new_text = "".join(definite_texts[self._definite_count:])
+                            self._definite_count = len(definite_texts)
                             self._emit(VoiceEvent(type="final_transcript",
-                                                  data={"text": text}))
+                                                  data={"text": new_text}))
                             self._emit(VoiceEvent(type="utterance_end"))
                         elif text:
                             self._emit(VoiceEvent(type="partial_transcript",
@@ -288,6 +297,10 @@ class VolcanoVoiceAdapter:
             await task
         except asyncio.CancelledError:
             self._interrupted.set()
+            self._emit(VoiceEvent(type="tts_end", data={"interrupted": True}))
+            return
+        except Exception as exc:  # noqa: BLE001 —— TTS 失败只降级，不炸穿语音会话
+            logger.warning("TTS 播报失败: %s: %s", type(exc).__name__, exc)
             self._emit(VoiceEvent(type="tts_end", data={"interrupted": True}))
             return
         finally:
