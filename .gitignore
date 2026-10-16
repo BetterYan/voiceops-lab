@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+dist/
+build/
+.mypy_cache
+
+# 本地凭据（勿提交）
+.env

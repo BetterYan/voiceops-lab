@@ -1,0 +1,41 @@
+[project]
+name = "voiceops-lab"
+version = "0.1.0"
+description = "语音操控的智能硬件工作台 — AI Agent × 硬件交互架构 PoC（面试作品）"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Zhuang Yan" }]
+dependencies = [
+    "fastapi>=0.143.2",
+    "langgraph>=1.2,<2",
+    "mcp>=1.30,<2",
+    "python-dotenv>=1.2.4",
+    "uvicorn[standard]>=0.54.0",
+    "websockets>=16",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+]
+
+[project.scripts]
+voiceops = "voiceops.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.7,<1"]
+build-backend = "uv_build"
+
+[tool.uv]
+package = true
+
+[tool.uv.build-backend]
+module-name = "voiceops"
+module-root = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

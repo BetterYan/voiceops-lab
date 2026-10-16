@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VoiceOps Demo — 语音操控方块</title>
+<style>
+  :root{--bg:#0f1420;--panel:#1a2233;--ink:#e8eef7;--muted:#8fa0b5;
+        --accent:#3b82f6;--ok:#22c55e;--border:#2a3550}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.7 "Segoe UI","Microsoft YaHei",sans-serif;
+       display:flex;justify-content:center;padding:32px 16px}
+  .layout{display:flex;gap:32px;flex-wrap:wrap;max-width:1060px}
+  .col{flex:1;min-width:340px}
+  h1{font-size:24px;margin:0 0 6px}
+  .sub{color:var(--muted);margin-bottom:20px}
+  .panel{background:var(--panel);border:1px solid var(--border);
+         border-radius:14px;padding:18px 20px;margin-bottom:16px}
+  .steps{margin:0;padding-left:20px}
+  .steps li{margin:6px 0}
+  .cmds{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+  .cmd{background:#223052;border:1px solid var(--border);border-radius:8px;
+       padding:3px 12px;font-size:13px;color:#a8c3f5;cursor:pointer}
+  .cmd:hover{border-color:var(--accent)}
+  /* 棋盘 */
+  .board{position:relative;width:400px;height:400px;margin:8px auto 4px;
+         background:#131a2b;border:2px solid var(--border);border-radius:10px;
+         background-image:linear-gradient(var(--border) 1px,transparent 1px),
+                          linear-gradient(90deg,var(--border) 1px,transparent 1px);
+         background-size:40px 40px}
+  .block{position:absolute;width:34px;height:34px;border-radius:8px;
+         background:linear-gradient(135deg,#3b82f6,#8b5cf6);
+         box-shadow:0 0 18px rgba(99,102,241,.7);
+         transition:left .35s ease,top .35s ease;
+         display:flex;align-items:center;justify-content:center;
+         font-size:16px;font-weight:700}
+  .coord{text-align:center;color:var(--muted);font-family:Consolas,monospace;font-size:13px}
+  .speaking .block{box-shadow:0 0 26px rgba(34,197,94,.9)}
+  /* 控件 */
+  button{border:0;border-radius:9px;padding:10px 18px;font-size:14px;font-weight:600;
+         cursor:pointer;color:#fff;background:var(--accent);margin-right:8px}
+  button:hover{filter:brightness(1.1)}
+  button.rec{background:#dc2626;animation:pulse 1.2s infinite}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  @keyframes pulse{50%{opacity:.75}}
+  .log{height:150px;overflow-y:auto;font-size:13.5px}
+  .log div{padding:3px 0;border-bottom:1px dashed var(--border)}
+  .you{color:#93c5fd}.agent{color:#6ee7b7}.sys{color:var(--muted);font-size:12.5px}
+  .row{display:flex;gap:8px;margin-top:10px}
+  input[type=text]{flex:1;background:#101827;border:1px solid var(--border);
+        border-radius:9px;color:var(--ink);padding:9px 12px;font-size:14px;outline:none}
+  input[type=text]:focus{border-color:var(--accent)}
+  .badge{display:inline-block;border-radius:6px;padding:1px 10px;font-size:12px;font-weight:700}
+  .badge.on{background:#12291d;color:#4ade80}.badge.off{background:#2a1a1a;color:#f87171}
+</style>
+</head>
+<body>
+<div class="layout">
+  <div class="col">
+    <h1>🎙️ 语音操控方块</h1>
+    <div class="sub">浏览器麦克风 → 火山引擎 STT → Agent 编排 → 方块移动（无凭据时可用文字输入体验全链路）</div>
+
+    <div class="panel">
+      <b>使用步骤</b>
+      <ol class="steps">
+        <li>点击「连接并授权麦克风」，浏览器弹出授权时选择<b>允许</b>；</li>
+        <li>对着麦克风说出指令，例如下方示例；</li>
+        <li>方块移动后，Agent 会语音播报新位置（有火山凭据时）。</li>
+      </ol>
+      <div class="cmds" id="cmdExamples">
+        <span class="cmd">向左移动两格</span><span class="cmd">向下移三格</span>
+        <span class="cmd">移到右上角</span><span class="cmd">回到中心</span>
+        <span class="cmd">向右移动一格</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <b>连接状态</b>
+      <div style="margin-top:8px">
+        语音识别：<span id="voiceBadge" class="badge off">检测中…</span>
+        &nbsp;&nbsp;连接：<span id="wsBadge" class="badge off">未连接</span>
+      </div>
+      <div style="margin-top:14px">
+        <button id="btnConnect">连接并授权麦克风</button>
+        <button id="btnMic" disabled class="rec" style="display:none">● 停止录音</button>
+      </div>
+      <div id="err" style="color:#f87171;font-size:13px;margin-top:8px"></div>
+    </div>
+
+    <div class="panel">
+      <b>对话记录</b>
+      <div class="log" id="log"><div class="sys">等待连接…（也可以直接用下方文字输入）</div></div>
+      <div class="row">
+        <input type="text" id="textInput" placeholder="文字指令兜底：如「向左移动两格」">
+        <button id="btnSend">发送</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="col" style="max-width:460px">
+    <div class="panel">
+      <b>虚拟工作台（10×10 网格）</b>
+      <div class="board" id="board"><div class="block" id="blk">■</div></div>
+      <div class="coord" id="coord">方块位置：(5, 5)</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const logBox = $("log");
+function log(cls, text){
+  const d = document.createElement("div");
+  d.className = cls; d.textContent = text;
+  logBox.appendChild(d); logBox.scrollTop = logBox.scrollHeight;
+}
+function setBadge(id, on, text){
+  const el = $(id); el.className = "badge " + (on ? "on" : "off"); el.textContent = text;
+}
+
+// ---- 方块渲染 ----
+function renderBoard(x, y){
+  $("blk").style.left = (x * 40 + 3) + "px";
+  $("blk").style.top  = (y * 40 + 3) + "px";
+  $("coord").textContent = `方块位置：(${x}, ${y})`;
+  document.body.classList.add("speaking");
+  setTimeout(() => document.body.classList.remove("speaking"), 600);
+}
+renderBoard(5, 5);
+
+// ---- WebSocket ----
+let ws = null, voiceEnabled = false;
+function connect(onOpen){
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { setBadge("wsBadge", true, "已连接"); if (onOpen) onOpen(); };
+  ws.onclose = () => { setBadge("wsBadge", false, "已断开"); setMicUI(false); };
+  ws.onmessage = (ev) => {
+    if (ev.data instanceof ArrayBuffer){ playTTS(ev.data); return; }
+    const m = JSON.parse(ev.data);
+    if (m.type === "voice_ready"){ voiceEnabled = true;
+      setBadge("voiceBadge", true, "火山引擎 STT/TTS 已就绪"); showMic(); }
+    else if (m.type === "board"){ renderBoard(m.x, m.y); }
+    else if (m.type === "transcript"){
+      log(m.final ? "you" : "sys", (m.final ? "你：" : "识别中…") + m.text); }
+    else if (m.type === "agent_reply"){ log("agent", "Agent：" + m.text);
+      if (!voiceEnabled) log("sys", "(未配置 VOLC_API_KEY，语音播报跳过)"); }
+    else if (m.type === "error"){ log("sys", "语音错误：" + JSON.stringify(m.data)); }
+  };
+}
+
+// ---- TTS 播放（后端回传 mp3 二进制帧） ----
+function playTTS(bytes){
+  const blob = new Blob([bytes], {type: "audio/mpeg"});
+  const audio = new Audio(URL.createObjectURL(blob));
+  audio.play().catch(() => log("sys", "(浏览器阻止了自动播放，请先点击页面任意处)"));
+}
+
+// ---- 麦克风：getUserMedia → PCM 16k/16bit/mono → WS ----
+let audioCtx = null, stream = null, processor = null, streaming = false;
+function floatTo16(input){
+  const out = new Int16Array(input.length);
+  for (let i = 0; i < input.length; i++){
+    const s = Math.max(-1, Math.min(1, input[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return out.buffer;
+}
+function downsample(input, from, to){
+  const ratio = from / to, outLen = Math.floor(input.length / ratio);
+  const out = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++){
+    const idx = Math.floor(i * ratio);
+    out[i] = input[idx] || 0;
+  }
+  return out;
+}
+async function startMic(){
+  try{
+    stream = await navigator.mediaDevices.getUserMedia(
+      {audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true}});
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 16000});
+    const src = audioCtx.createMediaStreamSource(stream);
+    const proc = audioCtx.createScriptProcessor(4096, 1, 1);
+    processor = proc; streaming = true;
+    proc.onaudioprocess = (e) => {
+      if (!streaming) return;
+      let f = e.inputBuffer.getChannelData(0);
+      if (audioCtx.sampleRate !== 16000) f = downsample(f, audioCtx.sampleRate, 16000);
+      if (ws && ws.readyState === 1) ws.send(floatTo16(f));
+    };
+    const sink = audioCtx.createGain(); sink.gain.value = 0;
+    src.connect(proc); proc.connect(sink); sink.connect(audioCtx.destination);
+    setMicUI(true);
+    log("sys", "麦克风已开启，请说出指令…");
+  }catch(err){
+    $("err").textContent = "麦克风授权失败：" + err.message + "（可用下方文字输入体验）";
+  }
+}
+function stopMic(){
+  streaming = false;
+  if (processor) processor.disconnect();
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  if (audioCtx) audioCtx.close();
+  audioCtx = stream = processor = null;
+  setMicUI(false);
+  log("sys", "麦克风已停止。");
+}
+function setMicUI(on){
+  const b = $("btnMic");
+  b.style.display = on ? "inline-block" : "none";
+  b.textContent = on ? "● 停止录音" : "● 停止录音";
+  b.classList.toggle("rec", on);
+  $("btnConnect").disabled = on;
+}
+
+// ---- 事件绑定 ----
+$("btnConnect").onclick = () => {
+  $("err").textContent = "";
+  connect(async () => {
+    const cfg = await fetch("/api/config").then(r => r.json()).catch(() => ({}));
+    if (cfg.voice_enabled){ log("sys", "已连接，火山语音通道就绪。"); startMic(); }
+    else {
+      setBadge("voiceBadge", false, "未配置 VOLC_API_KEY");
+      log("sys", "已连接（文字模式）。后端未配置火山凭据，请用文字指令体验。");
+    }
+  });
+};
+$("btnMic").onclick = () => streaming ? stopMic() : startMic();
+function sendText(){
+  const t = $("textInput").value.trim();
+  if (!t) return;
+  if (!ws || ws.readyState !== 1) connect(() => {});
+  setTimeout(() => { if (ws.readyState === 1) ws.send(JSON.stringify({type: "text", text: t})); }, 150);
+  $("textInput").value = "";
+}
+$("btnSend").onclick = sendText;
+$("textInput").addEventListener("keydown", e => { if (e.key === "Enter") sendText(); });
+$("cmdExamples").addEventListener("click", e => {
+  if (e.target.classList.contains("cmd")) $("textInput").value = e.target.textContent;
+});
+</script>
+</body>
+</html>
