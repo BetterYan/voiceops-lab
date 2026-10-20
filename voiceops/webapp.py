@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +91,13 @@ class BoardSession:
         self.ws = ws
         self.c = container
         self.loop = asyncio.get_running_loop()
+        # 会话隔离：每连接唯一 id —— LangGraph thread_id 与 trace_id 均按会话
+        # 区分，多浏览器并发时编排状态互不污染（此前全局共享 "web-session"
+        # 会导致不同会话在同一线程状态上交错执行）
+        self.session_id = uuid.uuid4().hex[:12]
+        # 命令串行化：语音转写与文字输入两个入口可能并发到达，同一会话内
+        # 一次只跑一个编排（历史问题：并发 run 竞态 + TTS 收集互相覆盖）
+        self._cmd_lock = asyncio.Lock()
         self.voice: VolcanoVoiceAdapter | None = None
         self._events: asyncio.Queue = asyncio.Queue()
         self._frames = 0
@@ -188,12 +196,19 @@ class BoardSession:
     # ---- 指令 → 编排 → 状态/TTS 回传 ------------------------------------------
 
     async def handle_command(self, text: str) -> None:
+        """会话内命令串行化入口：排队执行，避免并发编排竞态。"""
         text = text.strip()
         if not text:
             return
-        logger.info("处理指令: %s", text)
+        async with self._cmd_lock:
+            await self._dispatch_command(text)
+
+    async def _dispatch_command(self, text: str) -> None:
+        logger.info("处理指令 [session=%s]: %s", self.session_id, text)
+        # thread_id/trace_id 按会话隔离：checkpointer 的线程状态不再跨会话共享
         result = await asyncio.to_thread(
-            self.c.orchestrator.run, text, "web", "web-session")
+            self.c.orchestrator.run, text,
+            f"web-{self.session_id}", self.session_id)
         logger.info("编排完成，回复: %s", result["final"])
         block = self.c.hardware.read_state("block")
         await self.send({"type": "board",
@@ -212,14 +227,11 @@ class BoardSession:
                 logger.warning("TTS 音频生成/回传失败（已跳过）", exc_info=True)
 
     def _tts_bytes(self, text: str) -> bytes | None:
-        buf = bytearray()
-        original = self.voice.audio_player
-        self.voice.audio_player = lambda a, _fmt: buf.extend(a)
-        try:
-            self.voice.speak(text)
-        finally:
-            self.voice.audio_player = original
-        return bytes(buf) or None
+        # 使用 speak 的 collect 参数收集音频（不播放、不替换 adapter 属性）——
+        # 每次 call 局部缓冲，并发安全；命令已被会话锁串行化
+        collect = bytearray()
+        self.voice.speak(text, collect=collect)
+        return bytes(collect) or None
 
     async def send(self, payload: dict) -> None:
         await self.ws.send_text(json.dumps(payload, ensure_ascii=False))

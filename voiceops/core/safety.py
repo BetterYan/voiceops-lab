@@ -14,6 +14,8 @@ LLM 的非确定性行为被限制在"选择哪个工具"这一层。
 """
 from __future__ import annotations
 
+import threading
+
 from voiceops.ports import Event, EventPublisher, UserInteraction, make_event
 
 from .models import JournalEntry, SafetyLevel, ToolResult, ToolSpec
@@ -44,26 +46,33 @@ def validate_args(spec: ToolSpec, args: dict) -> None:
 
 
 class Journal:
-    """执行轨迹簿：审计 + 回滚双职责。"""
+    """执行轨迹簿：审计 + 回滚双职责。
+
+    线程安全：Web 等多入口场景下并发 append（seq 全局唯一、单调递增）
+    与 rollback_all 互不踩踏 —— 审计序号是回滚顺序正确性的基础。
+    """
 
     def __init__(self) -> None:
         self.entries: list[JournalEntry] = []
         self._seq = 0
+        self._lock = threading.Lock()
 
     def append(self, entry: JournalEntry) -> JournalEntry:
-        self._seq += 1
-        entry.seq = self._seq
-        self.entries.append(entry)
+        with self._lock:
+            self._seq += 1
+            entry.seq = self._seq
+            self.entries.append(entry)
         return entry
 
     def rollback_all(self) -> int:
         """逆序撤销所有已执行且可撤销的操作（测试/恢复用）。"""
         n = 0
-        for entry in reversed(self.entries):
-            if entry.status == "ok" and entry.undo is not None:
-                entry.undo()
-                entry.status = "rolled_back"
-                n += 1
+        with self._lock:
+            for entry in reversed(self.entries):
+                if entry.status == "ok" and entry.undo is not None:
+                    entry.undo()
+                    entry.status = "rolled_back"
+                    n += 1
         return n
 
 

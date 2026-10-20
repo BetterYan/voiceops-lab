@@ -10,3 +10,4 @@ build/
 
 # 本地凭据（勿提交）
 .env
+.vscode

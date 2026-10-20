@@ -151,10 +151,17 @@ class VolcanoVoiceAdapter:
             raise RuntimeError("start_session 未调用")
         asyncio.run_coroutine_threadsafe(self._audio_queue.put(frame), self._loop)
 
-    def speak(self, text: str) -> None:
+    def speak(self, text: str, *, collect: bytearray | None = None) -> None:
+        """TTS 播报。
+
+        collect 不为 None 时不走 audio_player，而是把音频字节收进调用方
+        提供的缓冲区（Web 侧回传浏览器播放）。相比替换 audio_player 属性
+        （monkey-patch），collect 是每次调用的局部状态，天然线程安全，
+        并发播报互不串扰。
+        """
         if self._loop is None:
             raise RuntimeError("start_session 未调用")
-        fut = asyncio.run_coroutine_threadsafe(self._tts_speak(text), self._loop)
+        fut = asyncio.run_coroutine_threadsafe(self._tts_speak(text, collect), self._loop)
         fut.result(timeout=60)     # 同步等待播报完成（可被打断提前返回）
 
     def interrupt(self) -> None:
@@ -283,7 +290,8 @@ class VolcanoVoiceAdapter:
 
     # ---- TTS：JSON 事件流 + 二进制音频下行 ----------------------------------
 
-    async def _tts_speak(self, text: str) -> None:
+    async def _tts_speak(self, text: str,
+                         collect: bytearray | None = None) -> None:
         import websockets
 
         if self._interrupted.is_set():
@@ -306,7 +314,10 @@ class VolcanoVoiceAdapter:
         finally:
             self._tts_task = None
         if audio and not self._interrupted.is_set():
-            self.audio_player(bytes(audio), fmt)
+            if collect is not None:
+                collect.extend(audio)   # 调用方收集音频（不播放）
+            else:
+                self.audio_player(bytes(audio), fmt)
         self._emit(VoiceEvent(type="tts_end",
                               data={"bytes": len(audio), "interrupted": False}))
 
