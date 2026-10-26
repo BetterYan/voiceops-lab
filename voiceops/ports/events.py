@@ -5,10 +5,11 @@
   核心域只负责 publish，不关心谁在听 —— 观察者与业务解耦。
 - 测试通过订阅事件收集执行轨迹，替代侵入式日志断言。
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol, runtime_checkable
+from collections.abc import Callable
+from typing import Any, Protocol, runtime_checkable
 
 Event = dict  # {"name": str, "payload": dict, "ts": float, "trace_id": str}
 
@@ -22,6 +23,10 @@ class EventPublisher(Protocol):
     def subscribe(self, name: str, handler: Callable[[Event], None]) -> None: ...
 
 
-def make_event(name: str, payload: dict[str, Any] | None = None,
-               ts: float = 0.0, trace_id: str = "") -> Event:
+def make_event(
+    name: str,
+    payload: dict[str, Any] | None = None,
+    ts: float = 0.0,
+    trace_id: str = "",
+) -> Event:
     return {"name": name, "payload": payload or {}, "ts": ts, "trace_id": trace_id}

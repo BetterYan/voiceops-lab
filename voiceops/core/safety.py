@@ -12,11 +12,12 @@
 设计要点：安全边界的"确定性"体现在分级表与执行路径都是代码，
 LLM 的非确定性行为被限制在"选择哪个工具"这一层。
 """
+
 from __future__ import annotations
 
 import threading
 
-from voiceops.ports import Event, EventPublisher, UserInteraction, make_event
+from voiceops.ports import EventPublisher, UserInteraction, make_event
 
 from .models import JournalEntry, SafetyLevel, ToolResult, ToolSpec
 
@@ -42,7 +43,9 @@ def validate_args(spec: ToolSpec, args: dict) -> None:
         if ptype == "boolean" and not isinstance(value, bool):
             raise SchemaError(f"{spec.name}: arg '{key}' must be boolean")
         if "enum" in props[key] and value not in props[key]["enum"]:
-            raise SchemaError(f"{spec.name}: arg '{key}' must be one of {props[key]['enum']}")
+            raise SchemaError(
+                f"{spec.name}: arg '{key}' must be one of {props[key]['enum']}"
+            )
 
 
 class Journal:
@@ -77,8 +80,13 @@ class Journal:
 
 
 class SafetyGate:
-    def __init__(self, interaction: UserInteraction, journal: Journal,
-                 bus: EventPublisher, clock_now) -> None:
+    def __init__(
+        self,
+        interaction: UserInteraction,
+        journal: Journal,
+        bus: EventPublisher,
+        clock_now,
+    ) -> None:
         self._interaction = interaction
         self.journal = journal
         self._bus = bus
@@ -92,25 +100,43 @@ class SafetyGate:
         try:
             validate_args(spec, args)
         except SchemaError as exc:
-            self._emit("safety.schema_rejected", {"tool": spec.name, "error": str(exc)}, trace_id)
+            self._emit(
+                "safety.schema_rejected",
+                {"tool": spec.name, "error": str(exc)},
+                trace_id,
+            )
             return ToolResult(ok=False, error=str(exc), tool_name=spec.name)
 
-        entry = self.journal.append(JournalEntry(
-            seq=0, ts=self._now(), tool=spec.name, args=dict(args),
-            level=spec.safety, trace_id=trace_id))
+        entry = self.journal.append(
+            JournalEntry(
+                seq=0,
+                ts=self._now(),
+                tool=spec.name,
+                args=dict(args),
+                level=spec.safety,
+                trace_id=trace_id,
+            )
+        )
 
         # 2) R2：确定性门禁 —— 人说放行才放行
         if spec.safety == SafetyLevel.R2:
-            self._emit("safety.confirm_required",
-                       {"tool": spec.name, "args": args, "risk": spec.description}, trace_id)
+            self._emit(
+                "safety.confirm_required",
+                {"tool": spec.name, "args": args, "risk": spec.description},
+                trace_id,
+            )
             approved = self._interaction.confirm(
-                action_summary=f"{spec.name} {args}", risk_reason=spec.description)
+                action_summary=f"{spec.name} {args}", risk_reason=spec.description
+            )
             if not approved:
                 entry.status = "denied"
                 self._emit("safety.denied", {"tool": spec.name, "args": args}, trace_id)
-                return ToolResult(ok=False, denied=True,
-                                  error="denied by human-in-the-loop",
-                                  tool_name=spec.name)
+                return ToolResult(
+                    ok=False,
+                    denied=True,
+                    error="denied by human-in-the-loop",
+                    tool_name=spec.name,
+                )
             entry.status = "approved"
             self._emit("safety.approved", {"tool": spec.name}, trace_id)
 
@@ -129,10 +155,18 @@ class SafetyGate:
             return ToolResult(ok=True, data=data, tool_name=spec.name)
         except Exception as exc:  # noqa: BLE001 —— 门禁统一兜底
             entry.status = "failed"
-            self._emit("tool.result", {"tool": spec.name, "ok": False, "error": str(exc)}, trace_id)
+            self._emit(
+                "tool.result",
+                {"tool": spec.name, "ok": False, "error": str(exc)},
+                trace_id,
+            )
             # R1/R2 失败时若已产生副作用，先回滚本次
             if undo is not None:
                 undo()
                 entry.status = "failed_rolled_back"
-            return ToolResult(ok=False, error=str(exc), tool_name=spec.name,
-                              rolled_back=undo is not None)
+            return ToolResult(
+                ok=False,
+                error=str(exc),
+                tool_name=spec.name,
+                rolled_back=undo is not None,
+            )
